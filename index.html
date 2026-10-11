@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Dubai Explorer - Step 1</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #cfe8ff;
+    font-family: system-ui, sans-serif; touch-action: none;
+    -webkit-user-select: none; user-select: none; }
+  canvas { display: block; }
+  #bar { position: fixed; top: 0; left: 0; right: 0; padding: 10px; display: flex;
+    gap: 8px; justify-content: center; z-index: 2; }
+  button { font-size: 16px; padding: 10px 16px; border: 0; border-radius: 10px;
+    background: #1f3864; color: #fff; }
+  button.active { background: #e08a1e; }
+  #pad { position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%);
+    display: grid; grid-template-columns: repeat(3, 64px); grid-template-rows: repeat(2, 64px);
+    gap: 6px; z-index: 2; }
+  #pad button { font-size: 24px; padding: 0; }
+  #up { grid-column: 2; grid-row: 1; }
+  #left { grid-column: 1; grid-row: 2; }
+  #down { grid-column: 2; grid-row: 2; }
+  #right { grid-column: 3; grid-row: 2; }
+  #readout { position: fixed; bottom: 12px; left: 0; right: 0; text-align: center;
+    color: #1f3864; font-size: 14px; z-index: 2; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="btnTouch" class="active">Touch</button>
+  <button id="btnTilt">Tilt</button>
+</div>
+<div id="pad">
+  <button id="up">&#9650;</button>
+  <button id="left">&#9664;</button>
+  <button id="down">&#9660;</button>
+  <button id="right">&#9654;</button>
+</div>
+<div id="readout">Touch mode</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ---------- Scene ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xcfe8ff);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 200);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xc2a878, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+sun.position.set(5, 10, 5);
+scene.add(sun);
+
+// Floor
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.MeshStandardMaterial({ color: 0xe8d2a6 })
+);
+floor.rotation.x = -Math.PI / 2;
+scene.add(floor);
+
+// A few blocks so you can see yourself moving
+const blocks = [[-8,-6],[6,-10],[10,4],[-12,8],[0,-16],[14,-4],[-4,12],[18,10],[-18,-8],[4,18]];
+blocks.forEach(([x, z], i) => {
+  const h = 2 + (i % 4) * 2;
+  const b = new THREE.Mesh(
+    new THREE.BoxGeometry(2, h, 2),
+    new THREE.MeshStandardMaterial({ color: 0x9fb4c9 })
+  );
+  b.position.set(x, h / 2, z);
+  scene.add(b);
+});
+
+// The traveller (the ball)
+const ball = new THREE.Mesh(
+  new THREE.SphereGeometry(0.5, 32, 32),
+  new THREE.MeshStandardMaterial({ color: 0xe08a1e })
+);
+ball.position.set(0, 0.5, 0);
+scene.add(ball);
+
+// ---------- Input ----------
+let mode = 'touch';                       // 'touch' or 'tilt'
+const keys = { up: false, down: false, left: false, right: false };
+const input = { x: 0, z: 0 };
+
+['up', 'down', 'left', 'right'].forEach(name => {
+  const el = document.getElementById(name);
+  el.addEventListener('pointerdown', e => { keys[name] = true; e.preventDefault(); });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev =>
+    el.addEventListener(ev, () => { keys[name] = false; }));
+});
+
+// Tilt
+let tiltReady = false;
+let latest = { beta: 0, gamma: 0 };
+let neutral = { beta: 0, gamma: 0 };
+const DEAD = 3;     // degrees ignored around neutral
+const MAXTILT = 25; // degrees for full speed
+
+function onOrientation(e) {
+  if (e.beta === null || e.gamma === null) return;
+  latest.beta = e.beta;
+  latest.gamma = e.gamma;
+}
+
+async function enableTilt() {
+  try {
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const result = await DeviceOrientationEvent.requestPermission(); // iPhone
+      if (result !== 'granted') {
+        readout.textContent = 'Tilt permission was denied';
+        return false;
+      }
+    }
+    if (!tiltReady) {
+      window.addEventListener('deviceorientation', onOrientation);
+      tiltReady = true;
+    }
+    // wait a moment for a first reading, then set neutral
+    setTimeout(() => { neutral = { beta: latest.beta, gamma: latest.gamma }; }, 300);
+    return true;
+  } catch (err) {
+    readout.textContent = 'Tilt error: ' + err.message;
+    return false;
+  }
+}
+
+function tiltAxis(delta) {
+  const mag = Math.min(Math.max((Math.abs(delta) - DEAD) / (MAXTILT - DEAD), 0), 1);
+  return Math.sign(delta) * mag;
+}
+
+// Mode buttons
+const btnTouch = document.getElementById('btnTouch');
+const btnTilt = document.getElementById('btnTilt');
+const pad = document.getElementById('pad');
+const readout = document.getElementById('readout');
+
+btnTouch.addEventListener('click', () => {
+  mode = 'touch';
+  btnTouch.classList.add('active'); btnTilt.classList.remove('active');
+  pad.style.display = 'grid';
+});
+btnTilt.addEventListener('click', async () => {
+  const ok = await enableTilt();   // tapping again re-sets neutral
+  if (!ok) return;
+  mode = 'tilt';
+  btnTilt.classList.add('active'); btnTouch.classList.remove('active');
+  pad.style.display = 'none';
+});
+
+// ---------- Loop ----------
+const vel = { x: 0, z: 0 };
+const ACCEL = 25, DAMP = 3, MAXSPEED = 7, LIMIT = 28;
+let last = performance.now();
+
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+
+  if (mode === 'touch') {
+    input.x = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+    input.z = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+  } else {
+    input.x = tiltAxis(latest.gamma - neutral.gamma);
+    input.z = tiltAxis(latest.beta - neutral.beta);
+  }
+
+  vel.x += input.x * ACCEL * dt;
+  vel.z += input.z * ACCEL * dt;
+  vel.x -= vel.x * DAMP * dt;
+  vel.z -= vel.z * DAMP * dt;
+  const speed = Math.hypot(vel.x, vel.z);
+  if (speed > MAXSPEED) { vel.x *= MAXSPEED / speed; vel.z *= MAXSPEED / speed; }
+
+  ball.position.x = Math.max(-LIMIT, Math.min(LIMIT, ball.position.x + vel.x * dt));
+  ball.position.z = Math.max(-LIMIT, Math.min(LIMIT, ball.position.z + vel.z * dt));
+
+  camera.position.set(ball.position.x, 10, ball.position.z + 10);
+  camera.lookAt(ball.position);
+
+  readout.textContent = mode === 'tilt'
+    ? `Tilt | beta ${latest.beta.toFixed(0)} gamma ${latest.gamma.toFixed(0)} | in x ${input.x.toFixed(2)} z ${input.z.toFixed(2)}`
+    : 'Touch mode';
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
